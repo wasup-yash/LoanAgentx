@@ -144,19 +144,36 @@ def _coerce_value(key: str, value: object) -> object:
 
 
 async def _record_degraded_audit(db: AsyncSession, application: Application, exc: Exception) -> None:
+    from app.core.redaction import redact_pii
+
+    raw = f"{exc.__class__.__name__}: {exc}"
+    try:
+        redacted = redact_pii(raw).text[:8000]
+    except Exception:
+        redacted = raw[:8000]
     db.add(
         AuditLog(
             application_id=application.id,
             action="extract.degraded",
-            llm_response=f"{exc.__class__.__name__}: {exc}",
+            llm_response=redacted,
             error_code=getattr(exc, "code", "unknown"),
         )
     )
 
 
 async def _record_extraction_audit(db: AsyncSession, application: Application, call) -> None:
+    from app.core.redaction import redact_pii
+
     prompt_excerpt = call.prompt_excerpt[:8000] if call.prompt_excerpt else None
     response_excerpt = call.response_raw[:8000] if call.response_raw else None
+    # Apply PII redaction before persisting (audit_service is not used in this node)
+    try:
+        if prompt_excerpt is not None:
+            prompt_excerpt = redact_pii(prompt_excerpt).text
+        if response_excerpt is not None:
+            response_excerpt = redact_pii(response_excerpt).text
+    except Exception:
+        pass
     db.add(
         AuditLog(
             application_id=application.id,

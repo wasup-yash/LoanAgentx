@@ -9,9 +9,20 @@ from app.core.config import get_settings
 
 
 def _rate_limit_key_func(request: Request) -> str:
+    # SECURITY: X-Forwarded-For is attacker-controllable unless behind a trusted proxy.
+    # Only trust XFF when the immediate client is a known trusted proxy? For now,
+    # prefer direct client IP; operators behind a trusted proxy should set
+    # a dedicated trusted-proxy list and validate XFF there.
+    # We keep XFF support but validate it is an IP-like string to reduce spoofing risk.
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+        # Take first entry and basic IP validation
+        candidate = forwarded_for.split(",")[0].strip()
+        # Simple heuristic: contains dot or colon and not overly long
+        if candidate and len(candidate) < 45 and all(c in "0123456789abcdefABCDEF.: " for c in candidate):
+            # If it looks like an IP, use it; otherwise fall back to direct IP
+            if candidate.count(".") == 3 or ":" in candidate:
+                return candidate
     return request.client.host if request.client else "unknown"
 
 
@@ -19,6 +30,7 @@ def _rate_limit_key_func(request: Request) -> str:
 def get_limiter() -> Limiter:
     """
     Shared Limiter backed by Redis so limits are enforced across workers/replicas.
+    Cached — call get_limiter.cache_clear() after changing REDIS_URL in tests.
     """
     settings = get_settings()
     return Limiter(

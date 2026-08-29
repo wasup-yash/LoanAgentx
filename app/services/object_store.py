@@ -4,7 +4,20 @@ from pathlib import Path
 
 from app.core.config import get_settings
 
-_SAFE_SUFFIX = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+_SAFE_SUFFIX = re.compile(r"^\.(?:pdf|txt|jpg|jpeg|png|bin)$", re.IGNORECASE)
+
+
+def _atomic_write_bytes(target: Path, payload: bytes) -> None:
+    """Atomic write via temp file + rename to avoid partial files on crash."""
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(payload)
+    tmp.replace(target)
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(target)
 
 
 def persist_document(application_id: uuid.UUID, document_id: uuid.UUID, filename: str, payload: bytes) -> str:
@@ -16,7 +29,7 @@ def persist_document(application_id: uuid.UUID, document_id: uuid.UUID, filename
         suffix = ".bin"
 
     target = root / f"{document_id}{suffix}"
-    target.write_bytes(payload)
+    _atomic_write_bytes(target, payload)
     return f"s3://loan-agent-documents/{application_id}/{target.name}"
 
 
@@ -25,7 +38,7 @@ def persist_export(application_id: uuid.UUID, xml_body: str) -> str:
     root.mkdir(parents=True, exist_ok=True)
 
     target = root / f"{application_id}.xml"
-    target.write_text(xml_body, encoding="utf-8")
+    _atomic_write_text(target, xml_body)
     return str(target)
 
 

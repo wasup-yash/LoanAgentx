@@ -98,6 +98,8 @@ async def extract_facts(sources: list[SourceText]) -> ExtractionCall:
             raise LLMConfigurationError(f"LLM rejected the request as malformed: {exc}") from exc
         except litellm.APIConnectionError as exc:
             raise LLMProviderError("Could not reach the LLM provider.") from exc
+        except Exception as exc:  # Catch-all for litellm APIError / unexpected provider errors
+            raise LLMProviderError(f"LLM provider error: {exc}") from exc
 
     assert response is not None
     latency_ms = int((time.perf_counter() - started) * 1000)
@@ -125,12 +127,16 @@ def _build_user_prompt(sources: list[SourceText]) -> str:
     blocks = []
     for source in sources:
         origin = f"DOCUMENT_ID={source.document_id}" if source.document_id else "ORIGIN=chat_transcript"
-        blocks.append(f"<<SOURCE {origin} LABEL={source.label}>>\n'''\n{source.text}\n'''")
-    return (
+        safe_text = source.text[:20_000] if len(source.text) > 20_000 else source.text
+        # Escape CDATA terminator to prevent prompt-injection via source text
+        safe_text = safe_text.replace("]]>", "]]]]><![CDATA[>")
+        blocks.append(f'<SOURCE {origin} label="{source.label}">\n<![CDATA[\n{safe_text}\n]]>\n</SOURCE>')
+    full = (
         "Extract all supported financial facts from the following sources.\n\n"
         + "\n\n".join(blocks)
         + "\n\nReturn JSON matching the ExtractionResult schema."
     )
+    return full[:80_000]
 
 
 def _mock_extract_facts(sources: list[SourceText]) -> ExtractionCall:

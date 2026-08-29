@@ -24,7 +24,16 @@ logger = get_logger(__name__)
     response_model=AuditTrailResponse,
     summary="Credit memo where every fact maps to its ExtractedFact and source snippet",
 )
-async def get_audit_trail(application_id: uuid.UUID, db: DbSession) -> AuditTrailResponse:
+async def get_audit_trail(
+    application_id: uuid.UUID,
+    db: DbSession,
+    limit: int = 100,
+    offset: int = 0,
+) -> AuditTrailResponse:
+    if limit < 1 or limit > 500:
+        raise InvalidApplicationStateError("limit must be between 1 and 500")
+    if offset < 0:
+        raise InvalidApplicationStateError("offset must be >= 0")
     application = await _get_application_or_raise(db, application_id)
 
     result = await db.execute(
@@ -32,6 +41,8 @@ async def get_audit_trail(application_id: uuid.UUID, db: DbSession) -> AuditTrai
         .where(ExtractedFact.application_id == application.id)
         .options(selectinload(ExtractedFact.document))
         .order_by(ExtractedFact.key, ExtractedFact.created_at)
+        .limit(limit)
+        .offset(offset)
     )
     facts = result.scalars().all()
 

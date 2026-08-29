@@ -53,13 +53,15 @@ async def verify_webhook_signature(
 
 
 def _verify_twilio_signature(secret: str, url: str, body: bytes, signature: str) -> None:
-    """Verify Twilio HMAC-SHA256 signature."""
-    # Twilio sorts POST params and appends to URL
-    # For JSON body, we treat the raw body as the "params" string
+    """Verify Twilio HMAC-SHA256 signature (supports both hex and base64 clients)."""
+    import base64
+
     message = url.encode() + body
-    expected = hmac.new(secret.encode(), message, hashlib.sha256).digest()
-    expected_b64 = expected.hex()
-    if not hmac.compare_digest(expected_b64, signature):
+    digest = hmac.new(secret.encode(), message, hashlib.sha256).digest()
+    expected_hex = digest.hex()
+    expected_b64 = base64.b64encode(digest).decode()
+    # Accept either hex or base64 to avoid brittle failures while staying constant-time
+    if not (hmac.compare_digest(expected_hex, signature) or hmac.compare_digest(expected_b64, signature)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Twilio signature.",
@@ -67,8 +69,17 @@ def _verify_twilio_signature(secret: str, url: str, body: bytes, signature: str)
 
 
 def _verify_sendgrid_signature(secret: str, body: bytes, timestamp: str, signature: str) -> None:
-    """Verify SendGrid HMAC-SHA256 signature."""
-    # SendGrid: HMAC-SHA256(payload + timestamp)
+    """Verify SendGrid HMAC-SHA256 signature with freshness check."""
+    # Reject replayed requests (timestamp tolerance 5 minutes)
+    try:
+        ts_int = int(timestamp)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid X-Request-Timestamp.")
+    import time
+
+    if abs(time.time() - ts_int) > 300:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Stale SendGrid timestamp.")
+
     message = body + timestamp.encode()
     expected = hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):

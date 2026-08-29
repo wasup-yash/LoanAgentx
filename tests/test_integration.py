@@ -27,7 +27,7 @@ async def test_duplicate_key_with_redis_flushed_replays_from_db(
     assert resp1.status_code == 202, resp1.text
     first_ack = resp1.json()
 
-    await fresh_redis.delete(f"idem:{key}")
+    await fresh_redis.delete(f"idem:{user_id}:{key}")
 
     resp2 = client.post(
         "/webhooks/incoming-message",

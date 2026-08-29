@@ -16,8 +16,12 @@ def _json_default(obj: Any) -> str:
 
 async def get_idempotency_response(key: str) -> dict[str, Any] | None:
     """Get cached response if key exists, else None."""
-    redis_client = get_redis_client()
-    cached = await redis_client.get(f"{_IDEMP_PREFIX}{key}")
+    try:
+        redis_client = get_redis_client()
+        cached = await redis_client.get(f"{_IDEMP_PREFIX}{key}")
+    except Exception:
+        # Redis unavailable -> treat as cache miss; DB unique constraint still guards duplicates
+        return None
     if cached:
         try:
             return json.loads(cached)
@@ -28,9 +32,15 @@ async def get_idempotency_response(key: str) -> dict[str, Any] | None:
 
 async def store_idempotency_response(key: str, response_payload: dict[str, Any]) -> None:
     """Store response for an idempotency key (called after successful processing)."""
-    redis_client = get_redis_client()
-    settings = get_settings()
-    await redis_client.setex(f"{_IDEMP_PREFIX}{key}", settings.idempotency_ttl_seconds, json.dumps(response_payload, default=_json_default))
+    try:
+        redis_client = get_redis_client()
+        settings = get_settings()
+        await redis_client.setex(f"{_IDEMP_PREFIX}{key}", settings.idempotency_ttl_seconds, json.dumps(response_payload, default=_json_default))
+    except Exception:
+        # Best-effort cache; failure should not fail the request. DB has committed.
+        import logging
+
+        logging.getLogger(__name__).warning("idempotency.store_failed", extra={"key": key})
 
 
 async def check_idempotency(key: str) -> tuple[bool, dict[str, Any] | None]:

@@ -27,11 +27,15 @@ OPEN_STATUSES = (
 
 
 async def ingest_inbound_message(db: AsyncSession, message: IncomingMessageWebhook, idempotency_key: str) -> WebhookAck:
-    application = await _resolve_open_application(db, message.user_id.strip())
+    user_id = message.user_id.strip()
+    application = await _resolve_open_application(db, user_id)
 
     received_at = message.sent_at or datetime.now(timezone.utc)
     if received_at.tzinfo is None:
         received_at = received_at.replace(tzinfo=timezone.utc)
+
+    # Scope DB key by borrower to prevent cross-borrower collisions on same header value
+    scoped_db_key = f"{user_id}:{idempotency_key}"
 
     communication = Communication(
         application_id=application.id,
@@ -39,7 +43,7 @@ async def ingest_inbound_message(db: AsyncSession, message: IncomingMessageWebho
         direction=Direction.inbound,
         content=message.text,
         timestamp=received_at,
-        idempotency_key=idempotency_key,
+        idempotency_key=scoped_db_key,
     )
     db.add(communication)
 
@@ -53,9 +57,10 @@ async def ingest_inbound_message(db: AsyncSession, message: IncomingMessageWebho
         await db.commit()
     except IntegrityError as exc:
         # Concurrent duplicate of the same Idempotency-Key won the race at the DB level.
-        # Replay the original ack instead of surfacing a 500.
+        # Replay the original ack scoped to this borrower instead of surfacing a 500.
         await db.rollback()
-        replayed = await _replay_by_idempotency_key(db, idempotency_key)
+        scoped_key = f"{message.user_id.strip()}:{idempotency_key}"
+        replayed = await _replay_by_idempotency_key(db, scoped_key, message.user_id.strip())
         if replayed is not None:
             return replayed
         raise
@@ -68,7 +73,9 @@ async def ingest_inbound_message(db: AsyncSession, message: IncomingMessageWebho
     )
 
 
-async def _replay_by_idempotency_key(db: AsyncSession, idempotency_key: str) -> WebhookAck | None:
+async def _replay_by_idempotency_key(
+    db: AsyncSession, idempotency_key: str, user_id: str | None = None
+) -> WebhookAck | None:
     result = await db.execute(
         select(Communication).where(Communication.idempotency_key == idempotency_key)
     )
@@ -76,13 +83,18 @@ async def _replay_by_idempotency_key(db: AsyncSession, idempotency_key: str) -> 
     if existing is None:
         return None
 
-    doc_result = await db.execute(
-        select(Document.id).where(Document.application_id == existing.application_id)
-    )
     app_result = await db.execute(
         select(Application).where(Application.id == existing.application_id)
     )
     application = app_result.scalar_one()
+
+    # Enforce borrower scoping: never replay across different external_borrower_id
+    if user_id is not None and application.external_borrower_id != user_id:
+        return None
+
+    doc_result = await db.execute(
+        select(Document.id).where(Document.application_id == existing.application_id)
+    )
     return WebhookAck(
         application_id=existing.application_id,
         application_status=application.status.value,
@@ -120,7 +132,7 @@ def _build_document(attachment: AttachmentIn, application_id: uuid.UUID) -> Docu
         except (binascii.Error, ValueError) as exc:
             raise InvalidAttachmentError("attachment content_base64 is not valid base64.") from exc
 
-    if len(payload) > get_settings().max_attachment_bytes:
+    if payload is not None and len(payload) > get_settings().max_attachment_bytes:
         raise PayloadTooLargeError()
 
     document_id = uuid.uuid4()
@@ -130,8 +142,16 @@ def _build_document(attachment: AttachmentIn, application_id: uuid.UUID) -> Docu
         s3_path = persist_document(application_id, document_id, attachment.filename or "upload.bin", payload)
         digest = hashlib.sha256(payload).hexdigest()
     else:
-        if attachment.url.startswith("s3://loan-agent-documents/") and ".." in attachment.url:
+        # content_base64 absent -> url must be present (validated by AttachmentIn)
+        if attachment.url is None:
+            raise InvalidAttachmentError("attachment url is required when content_base64 is absent.")
+        # Block path traversal in any s3:// URL and reject encoded traversal attempts
+        if ".." in attachment.url or "%2e" in attachment.url.lower():
             raise InvalidAttachmentError("attachment url must not contain path traversal segments.")
+        if attachment.url.startswith("s3://loan-agent-documents/"):
+            # Additional strict check for s3 prefix traversal via local_document_path logic will also enforce,
+            # but fail fast here.
+            pass
         s3_path = attachment.url
 
     return Document(

@@ -64,6 +64,7 @@ with TestClient(app) as client:
     print("CHAT:", status, body)
     assert status == 202
     app_id = body["application_id"]
+    first_chat_body = body
 
     pdf_bytes = _make_payslip_pdf()
     idem_2 = f"idem-happy-doc-{uuid.uuid4().hex[:8]}"
@@ -150,23 +151,28 @@ with TestClient(app) as client:
     assert timeout_audit.status_code == 200
     assert timeout_audit.json()["status"] == "manual_review", f"expected manual_review, got {timeout_audit.json()['status']}"
 
-    # --- Idempotency: duplicate key returns cached response ---
+    # --- Idempotency: duplicate key returns cached response (scoped per borrower) ---
     status_dup, body_dup = _post_webhook(client, {
-        "user_id": "some-other-borrower",
-        "channel": "sms",
-        "text": "This should be ignored due to duplicate idempotency key.",
-    }, idem_1)  # re-use idem_1 from the first chat message
-    print("IDEMP_DUP:", status_dup, body_dup)
-    assert status_dup == 202
-    # The response body should be identical to the first call's ack
-    first_chat_ack = _post_webhook(client, {
         "user_id": user_id,
         "channel": "sms",
-        "text": "Hi, I make $6,000 a month and I live at 12 Oak Street, Austin TX 78701.",
-    }, idem_1)
-    assert body_dup["application_id"] == first_chat_ack[1]["application_id"]
-    assert body_dup["communication_id"] == first_chat_ack[1]["communication_id"]
+        "text": "This should be ignored due to duplicate idempotency key.",
+    }, idem_1)  # re-use idem_1 from the first chat message, same borrower
+    print("IDEMP_DUP:", status_dup, body_dup)
+    assert status_dup == 202
+    assert body_dup["application_id"] == first_chat_body["application_id"]
+    assert body_dup["communication_id"] == first_chat_body["communication_id"]
     print("IDEMPOTENCY: duplicate key returned cached response OK")
+
+    # Cross-borrower same raw key must NOT collide (per-borrower scoping)
+    status_cross, body_cross = _post_webhook(client, {
+        "user_id": "some-other-borrower",
+        "channel": "sms",
+        "text": "Same raw key, different borrower.",
+    }, idem_1)
+    print("IDEMP_CROSS:", status_cross, body_cross)
+    assert status_cross == 202
+    assert body_cross["application_id"] != app_id, "cross-borrower keys must not collide"
+    print("IDEMPOTENCY: cross-borrower isolation OK")
 
     # --- Missing app 404 ---
     missing = client.get(f"/applications/{uuid.uuid4()}/audit-trail")

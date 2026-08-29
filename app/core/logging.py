@@ -62,12 +62,18 @@ class JsonFormatter(logging.Formatter):
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "event": record.getMessage(),
+            "event": record.getMessage() if not self.redact_secrets else _redact_secrets(record.getMessage()),
         }
         for key, value in record.__dict__.items():
             if key not in _RESERVED_RECORD_ATTRS and not key.startswith("_"):
                 if self.redact_secrets and isinstance(value, str):
                     payload[key] = _redact_secrets(value)
+                elif self.redact_secrets and isinstance(value, (dict, list)):
+                    # Best-effort redact stringified containers
+                    try:
+                        payload[key] = _redact_secrets(json.dumps(value, default=str))
+                    except Exception:
+                        payload[key] = value
                 else:
                     payload[key] = value
         if record.exc_info:

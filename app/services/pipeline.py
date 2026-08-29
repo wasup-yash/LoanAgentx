@@ -9,8 +9,15 @@ logger = get_logger(__name__)
 
 
 async def run_pipeline(application_id: str) -> None:
+    import uuid
+
+    try:
+        app_uuid = uuid.UUID(application_id)
+    except ValueError:
+        logger.warning("pipeline.invalid_id", extra={"application_id": application_id})
+        return
     async with SessionFactory() as db:
-        result = await db.execute(select(Application).where(Application.id == application_id))
+        result = await db.execute(select(Application).where(Application.id == app_uuid))
         application = result.scalar_one_or_none()
         if application is None:
             logger.warning("pipeline.not_found", extra={"application_id": application_id})

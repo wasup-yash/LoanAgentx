@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.models import Application, ApplicationStatus, AuditLog, Communication, Direction, ExtractedFact
+from app.models import Application, ApplicationStatus, AuditLog, Communication, Channel, Direction, ExtractedFact
 from app.schemas.extraction import REQUIRED_FACT_KEYS
 
 logger = get_logger(__name__)
@@ -82,7 +82,7 @@ def make_chase_node(db: AsyncSession, application: Application):
     return chase
 
 
-async def _pick_channel(db: AsyncSession, application: Application) -> Direction:
+async def _pick_channel(db: AsyncSession, application: Application) -> Channel:
     result = await db.execute(
         select(Communication.channel)
         .where(
@@ -93,7 +93,7 @@ async def _pick_channel(db: AsyncSession, application: Application) -> Direction
         .limit(1)
     )
     channel = result.scalar_one_or_none()
-    return channel if channel else Direction.sms
+    return channel if channel is not None else Channel.sms
 
 
 async def _chase_already_sent(db: AsyncSession, application_id, content: str) -> bool:

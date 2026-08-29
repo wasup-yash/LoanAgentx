@@ -74,12 +74,14 @@ async def loan_agent_error_handler(_: Request, exc: LoanAgentError) -> JSONRespo
 
 
 @app.get("/healthz", tags=["ops"], summary="Liveness + DB reachability probe")
-async def healthz() -> dict[str, str]:
+async def healthz():
+    from fastapi.responses import JSONResponse
+
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-    except OperationalError:
-        return {"status": "degraded", "database": "unreachable"}
+    except (OperationalError, Exception):
+        return JSONResponse(status_code=503, content={"status": "degraded", "database": "unreachable"})
     return {"status": "ok", "database": "reachable"}
 
 

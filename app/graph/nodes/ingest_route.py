@@ -31,6 +31,10 @@ def make_ingest_route_node(db: AsyncSession, application: Application):
                     text = parse_pdf(payload)
                 elif document.file_type == "text/plain":
                     text = parse_plain_text(payload)
+                elif document.file_type in ("image/jpeg", "image/png"):
+                    from app.services.ocr import ocr_image
+
+                    text = ocr_image(payload)
                 else:
                     raise MalformedPDFError(f"Unsupported file_type '{document.file_type}'.")
             except (MalformedPDFError, TextDecodingError, OCRUnavailableError) as exc:
